@@ -18,6 +18,9 @@ use cubecl_runtime::{
 };
 use std::{future::Future, num::NonZero, pin::Pin, sync::Arc};
 use wgpu::ComputePipeline;
+use wgpu::util::StagingBelt;
+
+const UPLOAD_BELT_CHUNK_SIZE: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 enum Timings {
@@ -38,6 +41,7 @@ pub struct WgpuStream {
     encoder: wgpu::CommandEncoder,
     poll: WgpuPoll,
     submission_load: SubmissionLoad,
+    upload_belt: StagingBelt,
 }
 
 impl WgpuStream {
@@ -80,12 +84,13 @@ impl WgpuStream {
                     label: Some("CubeCL Tasks Encoder"),
                 })
             },
-            device,
+            device: device.clone(),
             queue,
             tasks_count: 0,
             tasks_max,
             poll,
             submission_load: SubmissionLoad::default(),
+            upload_belt: StagingBelt::new(device.clone(), UPLOAD_BELT_CHUNK_SIZE),
         }
     }
 
@@ -97,16 +102,33 @@ impl WgpuStream {
     pub fn enqueue_task(&mut self, task: ScheduleTask) {
         match task {
             ScheduleTask::Write { data, buffer } => {
-                // It is important to flush before writing, as the write operation is inserted
-                // into the QUEUE not the encoder. We want to make sure all outstanding work
-                // happens _before_ the write operation.
-                let _ = self
-                    .flush(StreamErrorMode {
-                        ignore: true,
-                        flush: false,
-                    })
-                    .ok();
-                self.write_to_buffer(&buffer, &data);
+                // Reclaim staging buffers from prior submissions that the GPU has completed,
+                // so the belt can reuse them instead of allocating new ones.
+                self.upload_belt.recall();
+
+                let align = wgpu::COPY_BUFFER_ALIGNMENT;
+                let padded_size = buffer.size.next_multiple_of(align);
+                let size =
+                    NonZero::new(padded_size).expect("0 size buffers are not yet supported.");
+
+                // End the current compute pass so the upload copy can be encoded in order with
+                // the rest of this submission.
+                self.compute_pass = None;
+
+                let mut view = self.upload_belt.write_buffer(
+                    &mut self.encoder,
+                    &buffer.buffer,
+                    buffer.offset,
+                    size,
+                );
+                view.slice(..data.len()).copy_from_slice(&data);
+                if padded_size > data.len() as u64 {
+                    view.slice(data.len()..padded_size as usize).fill(0);
+                }
+                drop(view);
+
+                self.tasks_count += 1;
+                self.flush_if_needed();
             }
             ScheduleTask::Execute {
                 pipeline,
@@ -424,7 +446,8 @@ impl WgpuStream {
             })
         };
 
-        // This will _first_ fire off all pending write_buffer work.
+        self.upload_belt.finish();
+
         let index = self.queue.submit([tasks_encoder.finish()]);
 
         self.submission_load

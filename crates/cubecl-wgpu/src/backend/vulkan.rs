@@ -235,30 +235,44 @@ pub(crate) fn create_storage_buffer(
     let num_types = memory_props.memory_type_count as usize;
     let memory_types = memory_props.memory_types.iter().take(num_types);
 
-    let find_type = |flags: MemoryPropertyFlags| {
+    // The first type the buffer can live in with `flags`, in `heap` when one is named.
+    let find_type = |flags: MemoryPropertyFlags, heap: Option<u32>| {
         memory_types
             .clone()
             .enumerate()
             .filter(|(i, _)| requirements.memory_type_bits & (1 << *i) != 0)
-            .find(|(_, it)| it.property_flags.contains(flags))
+            .find(|(_, it)| {
+                it.property_flags.contains(flags) && heap.is_none_or(|heap| it.heap_index == heap)
+            })
             .map(|(i, _)| i)
     };
 
-    // On a discrete GPU, host-visible memory is the BAR window, often only 256 MiB.
+    // On a discrete GPU, host-visible memory is the BAR window, often only 256 MiB. An
+    // integrated GPU can keep one too: AMD's Windows driver exposes its host-visible
+    // device-local type in a 256 MiB heap of its own, beside the large device-local heap that
+    // is the GPU's real share of system RAM. So storage is mapped only where that type lives in
+    // the largest device-local heap; taking the 256 MiB one ran every allocation out of memory
+    // after 250 MiB while the real heap stood empty.
     let integrated = unsafe { instance.get_physical_device_properties(phys_device) }.device_type
         == vk::PhysicalDeviceType::INTEGRATED_GPU;
-    let unified_type = integrated
-        .then(|| {
-            find_type(
-                MemoryPropertyFlags::DEVICE_LOCAL
-                    | MemoryPropertyFlags::HOST_VISIBLE
-                    | MemoryPropertyFlags::HOST_COHERENT,
-            )
-        })
-        .flatten();
+    let largest_local_heap = memory_props.memory_heaps[..memory_props.memory_heap_count as usize]
+        .iter()
+        .enumerate()
+        .filter(|(_, heap)| heap.flags.contains(MemoryHeapFlags::DEVICE_LOCAL))
+        .max_by_key(|(_, heap)| heap.size)
+        .map(|(index, _)| index as u32);
+    let unified_type = largest_local_heap.filter(|_| integrated).and_then(|heap| {
+        find_type(
+            MemoryPropertyFlags::DEVICE_LOCAL
+                | MemoryPropertyFlags::HOST_VISIBLE
+                | MemoryPropertyFlags::HOST_COHERENT,
+            Some(heap),
+        )
+    });
 
     let memory_type_idx = unified_type
-        .or_else(|| find_type(MemoryPropertyFlags::DEVICE_LOCAL))
+        .or_else(|| find_type(MemoryPropertyFlags::DEVICE_LOCAL, largest_local_heap))
+        .or_else(|| find_type(MemoryPropertyFlags::DEVICE_LOCAL, None))
         .ok_or_else(|| IoError::Unknown {
             description: "No device local heap found".into(),
             backtrace: BackTrace::capture(),

@@ -818,7 +818,12 @@ fn try_create_server<C: WgpuCompiler>(
         }
     }
 
-    backend::register_features(&setup.adapter, &mut device_props, &mut compilation_options);
+    backend::register_features(
+        &setup.adapter,
+        setup.device.features(),
+        &mut device_props,
+        &mut compilation_options,
+    );
 
     // PATCH: remove once wgpu supports `VK_EXT_subgroup_size_control` and this runtime requires
     // full subgroups, so the adapter commits to an exact width on its own.

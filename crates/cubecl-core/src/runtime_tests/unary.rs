@@ -532,6 +532,39 @@ test_unary_impl!(test_tanh, F, Vector::tanh, [
     }
 ]);
 
+/// tanh is ±1 long before sinh and cosh overflow, in every precision, and a NaN stays a NaN. Without
+/// fast math, which would let the compiler assume there are none.
+pub fn test_tanh_saturates<R: Runtime, F: Float + num_traits::Float + CubeElement + Display>(
+    client: Client,
+) {
+    #[cube(launch_unchecked)]
+    fn test_function<F: Float, N: Size>(input: &[Vector<F, N>], output: &mut [Vector<F, N>]) {
+        if ABSOLUTE_POS < input.len() {
+            output[ABSOLUTE_POS] = Vector::tanh(input[ABSOLUTE_POS]);
+        }
+    }
+
+    let input = as_type![F: 12., -12., 20., -100., 1000., f64::NAN, 9., -0.5];
+    let expected = as_type![F: 1., -1., 1., -1., 1., f64::NAN, 1., -0.462_117_17];
+    for vectorization in [1, 4] {
+        let output_handle = client.empty(input.len() * core::mem::size_of::<F>());
+        let input_handle = client.create_from_slice(F::as_bytes(input));
+
+        unsafe {
+            test_function::launch_unchecked::<F>(
+                &client,
+                CubeCount::Static(1, 1, 1),
+                CubeDim::new_1d((input.len() / vectorization) as u32),
+                vectorization,
+                BufferArg::from_raw_parts(input_handle, input.len()),
+                BufferArg::from_raw_parts(output_handle.clone(), expected.len()),
+            )
+        };
+
+        assert_equals_approx::<F>(&client, output_handle, expected, F::new(0.001));
+    }
+}
+
 test_unary_impl!(test_exp, F, Vector::exp, [
     {
         input_vectorization: 1,
@@ -1128,6 +1161,7 @@ macro_rules! testgen_unary {
             add_test!(test_sinh);
             add_test!(test_cosh);
             add_test!(test_tanh);
+            add_test!(test_tanh_saturates);
             add_test!(test_exp);
             add_test!(test_ln);
             add_test!(test_asin);

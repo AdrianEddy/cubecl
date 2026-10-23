@@ -62,7 +62,7 @@ pub async fn try_request_vulkan_device(
     adapter: &wgpu::Adapter,
 ) -> Result<Option<(wgpu::Device, wgpu::Queue)>, crate::WgpuInitError> {
     let limits = adapter.limits();
-    let features = adapter
+    let mut features = adapter
         .features()
         .difference(Features::MAPPABLE_PRIMARY_BUFFERS);
     unsafe {
@@ -71,23 +71,63 @@ pub async fn try_request_vulkan_device(
                 message: "requesting a native Vulkan device requires a Vulkan adapter".into(),
             }
         })?;
+        // Without wgpu's subgroup features, wgpu-hal creates no pipeline with
+        // `ALLOW_VARYING_SUBGROUP_SIZE`, which keeps the size pinned. The SPIR-V compiled here
+        // still uses subgroup operations: Vulkan exposes them without a device feature.
+        if pinned_subgroup_size(adapter, &hal_adapter).is_some() {
+            features.remove(Features::SUBGROUP | Features::SUBGROUP_BARRIER);
+        }
         request_device(adapter, &hal_adapter, features, limits)
     }
 }
 
 pub fn register_vulkan_features(
     adapter: &wgpu::Adapter,
+    device_features: Features,
     props: &mut DeviceProperties,
     comp_options: &mut WgpuCompilationOptions,
 ) -> bool {
     let features = adapter.features();
     unsafe {
-        if let Some(adapter) = adapter.as_hal::<hal::api::Vulkan>() {
-            register_features(&adapter, props, features, comp_options)
+        if let Some(hal_adapter) = adapter.as_hal::<hal::api::Vulkan>() {
+            // A device that has wgpu's subgroup feature (one this crate did not open) runs every
+            // pipeline free to vary its subgroup size, so nothing is pinned on it.
+            let pinned = pinned_subgroup_size(adapter, &hal_adapter)
+                .filter(|_| !device_features.contains(Features::SUBGROUP));
+            register_features(&hal_adapter, props, features, pinned, comp_options)
         } else {
             false
         }
     }
+}
+
+/// The subgroup size every pipeline on `adapter` is pinned to, where the adapter's size can vary
+/// (`minSubgroupSize` != `maxSubgroupSize`, as on AMD): its default `subgroupSize`, which Vulkan
+/// gives a pipeline created without `ALLOW_VARYING_SUBGROUP_SIZE` from SPIR-V older than 1.6.
+///
+/// Plane algorithms and cooperative-matrix tilings are planned for one plane size. With the size
+/// free to vary, AMD's driver ran many kernels with 32 lanes against a plan for 64, and they
+/// computed wrong values, NaNs and out-of-bounds reads. `None` where the size cannot vary.
+fn pinned_subgroup_size(wgpu_adapter: &wgpu::Adapter, adapter: &vulkan::Adapter) -> Option<u32> {
+    let info = wgpu_adapter.get_info();
+    if info.subgroup_min_size == info.subgroup_max_size {
+        return None;
+    }
+    let ash = adapter.shared_instance();
+    if ash.instance_api_version() < API_VERSION_1_1
+        && !ash
+            .extensions()
+            .contains(&KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_NAME)
+    {
+        return None;
+    }
+    let mut subgroup = vk::PhysicalDeviceSubgroupProperties::default();
+    let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut subgroup);
+    unsafe {
+        ash.raw_instance()
+            .get_physical_device_properties2(adapter.raw_physical_device(), &mut properties)
+    };
+    Some(subgroup.subgroup_size)
 }
 
 /// Request device with required features, plus CMMA if available.
@@ -383,6 +423,7 @@ fn register_features(
     adapter: &vulkan::Adapter,
     props: &mut DeviceProperties,
     features: Features,
+    pinned_subgroup_size: Option<u32>,
     comp_options: &mut WgpuCompilationOptions,
 ) -> bool {
     let ash = adapter.shared_instance();
@@ -427,6 +468,13 @@ fn register_features(
     comp_options.supports_vulkan_compiler = true;
     comp_options.supports_u64 = extended_feat.core.shader_int64 == TRUE;
     comp_options.vulkan.max_spirv_version = extended_feat.max_spirv_version;
+    // A SPIR-V 1.6 module runs as though `ALLOW_VARYING_SUBGROUP_SIZE` were set, so a pinned size
+    // ([`pinned_subgroup_size`]) holds only for 1.5 and older, and every plane is that size.
+    if let Some(size) = pinned_subgroup_size {
+        comp_options.vulkan.max_spirv_version = comp_options.vulkan.max_spirv_version.min((1, 5));
+        props.hardware.plane_size_min = size;
+        props.hardware.plane_size_max = size;
+    }
     comp_options.vulkan.max_vector_size = 4;
     comp_options.vulkan.push_constant_size = properties.limits.max_push_constants_size as usize;
     comp_options.vulkan.supports_dp4a = extended_feat

@@ -1,8 +1,19 @@
 use cubecl_core::{self as cubecl, frontend::polyfills::*, prelude::*};
 use cubecl_ir::{dialect::math, interfaces::TypedExt, prelude::*};
 use cubecl_opt::passes::uniformity::op_dyn_uniformity;
+use pliron::{
+    attribute::{AttrObj, boxed_attr_cast},
+    builtin::{
+        attributes::VecAttr,
+        types::{IntegerType, Signedness},
+    },
+};
 use pliron_spirv::{
-    attrs::PackedVectorFormatAttr, ext::gl, ops, spirv::PackedVectorFormat, types::StructType,
+    attrs::{CompositeAttr, FloatAttr as SpirvFloatAttr, PackedVectorFormatAttr},
+    ext::gl,
+    ops,
+    spirv::PackedVectorFormat,
+    types::{FloatType as SpirvFloatType, StructType, VectorType as SpirvVectorType},
 };
 
 use crate::{
@@ -104,7 +115,101 @@ unop_to_spirv_dialect!(math::CosOp => gl::CosOp);
 unop_to_spirv_dialect!(math::TanOp => gl::TanOp);
 unop_to_spirv_dialect!(math::SinhOp => gl::SinhOp);
 unop_to_spirv_dialect!(math::CoshOp => gl::CoshOp);
-unop_to_spirv_dialect!(math::TanhOp => gl::TanhOp);
+
+// GLSL.std.450 Tanh inherits its precision from sinh / cosh, and AMD's Windows driver evaluates it
+// through an exponential that overflows where tanh is already ±1: NaN from |x| = 89 in f32 and from
+// |x| = 12 in f16, which turned large GELU arguments into NaN. tanh rounds to ±1 from |x| = 10 in
+// f32 (20 in f64), so the argument is clamped there, which changes no finite result; a NaN skips
+// the clamp, whose result for one is undefined (a bound in practice, which would make it ±1). A
+// half-precision tanh is evaluated in f32: a clamp low enough for an f16 exponential would sit
+// where tanh is not yet ±1 in f16.
+#[op_interface_impl]
+impl ToSpirvDialectOp for math::TanhOp {
+    fn to_spirv_dialect(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let op = self.get_operation();
+        let uniformity = op_dyn_uniformity(ctx, op);
+        let input = op.operand(ctx, 0);
+        let out_ty = ty_to_spirv_dialect(ctx, self.get_result(ctx).get_type(ctx));
+        let (lanes, width) = float_shape(ctx, out_ty);
+        let (eval_width, limit) = if width == 64 { (64, 20.0) } else { (32, 10.0) };
+        let eval_scalar: TypeHandle = SpirvFloatType::get(ctx, eval_width, None).to_handle();
+        let bool_scalar: TypeHandle = IntegerType::get(ctx, 1, Signedness::Signless).to_handle();
+        let (eval_ty, bool_ty) = match lanes {
+            Some(count) => (
+                SpirvVectorType::get(ctx, count, eval_scalar).to_handle(),
+                SpirvVectorType::get(ctx, count, bool_scalar).to_handle(),
+            ),
+            None => (eval_scalar, bool_scalar),
+        };
+
+        let mut value = input;
+        if width != eval_width {
+            let widen = ops::FConvertOp::new(ctx, eval_ty, value);
+            value = rewriter.append_op_with_result(ctx, &widen);
+        }
+        let bound = |ctx: &mut Context, rewriter: &mut DialectConversionRewriter, v: f64| {
+            let bits = if eval_width == 64 {
+                v.to_bits()
+            } else {
+                u64::from((v as f32).to_bits())
+            };
+            let scalar: AttrObj =
+                SpirvFloatAttr::new(bits, TypedHandle::from_handle(eval_scalar, ctx).unwrap())
+                    .into();
+            let attr: AttrObj = match lanes {
+                Some(count) => {
+                    CompositeAttr::new(VecAttr(vec![scalar; count as usize]), eval_ty).into()
+                }
+                None => scalar,
+            };
+            let constant =
+                pliron::builtin::ops::ConstantOp::new(ctx, boxed_attr_cast(attr).unwrap());
+            rewriter.append_op_with_result(ctx, &constant)
+        };
+        let (low, high) = (bound(ctx, rewriter, -limit), bound(ctx, rewriter, limit));
+        let clamp = gl::FClampOp::new(ctx, eval_ty, value, low, high);
+        let clamped = rewriter.append_op_with_result(ctx, &clamp);
+        let is_nan = ops::IsNanOp::new(ctx, bool_ty, value);
+        let is_nan = rewriter.append_op_with_result(ctx, &is_nan);
+        let select = ops::SelectOp::new(ctx, eval_ty, is_nan, value, clamped);
+        let argument = rewriter.append_op_with_result(ctx, &select);
+        let tanh = gl::TanhOp::new(ctx, eval_ty, argument);
+        let result = if width == eval_width {
+            decorate_uniform(ctx, tanh.get_operation(), uniformity);
+            rewriter.append_op(ctx, &tanh);
+            tanh.get_operation()
+        } else {
+            let tanh = rewriter.append_op_with_result(ctx, &tanh);
+            let narrow = ops::FConvertOp::new(ctx, out_ty, tanh);
+            decorate_uniform(ctx, narrow.get_operation(), uniformity);
+            rewriter.append_op(ctx, &narrow);
+            narrow.get_operation()
+        };
+        rewriter.replace_operation(ctx, op, result);
+        Ok(())
+    }
+}
+
+/// The lane count (`None` for a scalar) and component width of the SPIR-V float type `ty`.
+fn float_shape(ctx: &Context, ty: TypeHandle) -> (Option<u32>, u32) {
+    let (lanes, scalar) = match TypedHandle::<SpirvVectorType>::from_handle(ty, ctx) {
+        Ok(vector) => {
+            let vector = vector.deref(ctx);
+            (Some(vector.count), vector.element_type)
+        }
+        Err(_) => (None, ty),
+    };
+    let width = TypedHandle::<SpirvFloatType>::from_handle(scalar, ctx)
+        .expect("tanh of a float")
+        .deref(ctx)
+        .width;
+    (lanes, width)
+}
 unop_to_spirv_dialect!(math::ArcSinOp => gl::AsinOp);
 unop_to_spirv_dialect!(math::ArcCosOp => gl::AcosOp);
 unop_to_spirv_dialect!(math::ArcTanOp => gl::AtanOp);

@@ -809,7 +809,12 @@ fn try_create_server<C: WgpuCompiler>(
         }
     }
 
-    backend::register_features(&setup.adapter, &mut device_props, &mut compilation_options);
+    backend::register_features(
+        &setup.adapter,
+        setup.device.features(),
+        &mut device_props,
+        &mut compilation_options,
+    );
 
     #[cfg(any(feature = "spirv", feature = "msl"))]
     if compilation_options.supports_vulkan_compiler || compilation_options.supports_msl_compiler {

@@ -127,10 +127,11 @@ async fn request_metal_device(
 
 pub fn register_features(
     adapter: &Adapter,
+    device_features: wgpu::Features,
     props: &mut DeviceProperties,
     comp_options: &mut WgpuCompilationOptions,
 ) {
-    if register_vulkan_features(adapter, props, comp_options) {
+    if register_vulkan_features(adapter, device_features, props, comp_options) {
         return;
     }
     if register_metal_features(adapter, props, comp_options) {
@@ -142,11 +143,12 @@ pub fn register_features(
 #[cfg(feature = "spirv")]
 pub fn register_vulkan_features(
     adapter: &Adapter,
+    device_features: wgpu::Features,
     props: &mut DeviceProperties,
     comp_options: &mut WgpuCompilationOptions,
 ) -> bool {
     if is_vulkan(adapter) {
-        vulkan::register_vulkan_features(adapter, props, comp_options)
+        vulkan::register_vulkan_features(adapter, device_features, props, comp_options)
     } else {
         false
     }
@@ -155,6 +157,7 @@ pub fn register_vulkan_features(
 #[cfg(not(feature = "spirv"))]
 pub fn register_vulkan_features(
     _adapter: &Adapter,
+    _device_features: wgpu::Features,
     _props: &mut DeviceProperties,
     _comp_options: &mut WgpuCompilationOptions,
 ) -> bool {

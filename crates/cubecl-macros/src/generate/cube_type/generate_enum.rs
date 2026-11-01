@@ -427,6 +427,27 @@ impl CubeTypeEnum {
                 .collect(),
         );
 
+        // The variant is hashed before its fields: `PartialEq` tells variants apart, so `Hash`
+        // must too. Fields of runtime values hash nothing, and a kernel's persistent cache key
+        // (`KernelId::stable_hash`) is built from this hash alone, so two variants of runtime
+        // fields would otherwise share one compiled kernel.
+        let body_variant = self.match_impl(
+            quote! {self},
+            self.variants
+                .iter()
+                .map(|v| {
+                    let discriminant = v.discriminant;
+                    let variant = &v.ident;
+                    let pat = match v.kind {
+                        VariantKind::Named => quote![#name::#variant { .. }],
+                        VariantKind::Unnamed => quote![#name::#variant(..)],
+                        VariantKind::Empty => quote![#name::#variant],
+                    };
+                    quote![#pat => #discriminant]
+                })
+                .collect(),
+        );
+
         let body_hash = self.match_impl(
             quote! {self},
             self.variants
@@ -463,6 +484,8 @@ impl CubeTypeEnum {
 
             impl #generics_impl core::hash::Hash for #name #generic_names #where_clause {
                 fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+                    let variant: i32 = #body_variant;
+                    variant.hash(state);
                     #body_hash;
                 }
             }

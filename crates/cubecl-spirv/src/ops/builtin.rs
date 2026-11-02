@@ -1,4 +1,4 @@
-use cubecl_core::{self as cubecl, prelude::*};
+use cubecl_core::{self as cubecl, WgpuCompilationOptions, prelude::*};
 use cubecl_ir::{
     Builtin, ContextExt,
     dialect::general::ReadBuiltinOp,
@@ -9,6 +9,7 @@ use cubecl_ir::{
         op_interface_impl, pass_name,
     },
     rewrite::visit_all_ops_of_type_mut,
+    settings::Dim3,
 };
 use cubecl_opt::passes::uniformity::{DEVICE_UNIFORM, UniformAttr, op_dyn_uniformity};
 use pliron::{
@@ -177,6 +178,46 @@ fn constant(#[comptime] value: u32) -> u32 {
     value
 }
 
+/// The unit's coordinate along an axis of the cube, `(UNIT_POS / stride) % extent`: what
+/// `LocalInvocationId` holds where the cube runs with its own dimensions ([`runs_linear`]).
+#[cube]
+fn unit_pos_along(#[comptime] stride: u32, #[comptime] extent: u32) -> u32 {
+    (UNIT_POS / stride) % extent
+}
+
+#[cube]
+fn absolute_pos_x() -> u32 {
+    CUBE_POS_X * CUBE_DIM_X + UNIT_POS_X
+}
+
+#[cube]
+fn absolute_pos_y() -> u32 {
+    CUBE_POS_Y * CUBE_DIM_Y + UNIT_POS_Y
+}
+
+#[cube]
+fn absolute_pos_z() -> u32 {
+    CUBE_POS_Z * CUBE_DIM_Z + UNIT_POS_Z
+}
+
+/// Whether a multi-dimensional cube of `cube_dim` runs as a one-dimensional workgroup of all its
+/// units, its unit coordinates derived from `UNIT_POS`.
+///
+/// A plane is a subgroup, and every plane algorithm, shuffle and cooperative-matrix tiling takes a
+/// plane for a run of consecutive `UNIT_POS`: a `(plane_dim, planes)` cube has a plane per
+/// `UNIT_POS_Y`. Vulkan leaves which invocations of a workgroup make a subgroup to the
+/// implementation, and Intel's Arc compiler walks some two-dimensional workgroups in tiles: an
+/// 8×4 block of a 32×4 workgroup made each subgroup, and a plane sum added units of four planes.
+/// A one-dimensional workgroup has the one order, so a cube that fits `maxComputeWorkGroupSize.x`
+/// runs as one.
+pub(crate) fn runs_linear(ctx: &Context, cube_dim: Dim3) -> bool {
+    let max_x = ctx
+        .aux_ty::<WgpuCompilationOptions>()
+        .vulkan
+        .max_workgroup_size_x;
+    cube_dim.y * cube_dim.z > 1 && cube_dim.num_elems() <= max_x
+}
+
 impl RewriteBuiltins {
     fn lower_builtin(
         &mut self,
@@ -186,6 +227,7 @@ impl RewriteBuiltins {
         uniformity: Option<UniformAttr>,
     ) -> Value {
         let cube_dim = scope.ctx().aux_ty::<KernelInfo>().cube_dim;
+        let linear = runs_linear(scope.ctx(), cube_dim);
         match builtin {
             Builtin::UnitPos if cube_dim.num_elems() == 1 => {
                 constant::expand(scope, 0).value(scope)
@@ -193,6 +235,18 @@ impl RewriteBuiltins {
             Builtin::UnitPosX if cube_dim.x == 1 => constant::expand(scope, 0).value(scope),
             Builtin::UnitPosY if cube_dim.y == 1 => constant::expand(scope, 0).value(scope),
             Builtin::UnitPosZ if cube_dim.z == 1 => constant::expand(scope, 0).value(scope),
+            Builtin::UnitPosX if linear => {
+                unit_pos_along::expand(scope, 1, cube_dim.x).value(scope)
+            }
+            Builtin::UnitPosY if linear => {
+                unit_pos_along::expand(scope, cube_dim.x, cube_dim.y).value(scope)
+            }
+            Builtin::UnitPosZ if linear => {
+                unit_pos_along::expand(scope, cube_dim.x * cube_dim.y, cube_dim.z).value(scope)
+            }
+            Builtin::AbsolutePosX if linear => absolute_pos_x::expand(scope).value(scope),
+            Builtin::AbsolutePosY if linear => absolute_pos_y::expand(scope).value(scope),
+            Builtin::AbsolutePosZ if linear => absolute_pos_z::expand(scope).value(scope),
             Builtin::UnitPos => {
                 self.read_scalar_builtin(scope, ty, BuiltIn::LocalInvocationIndex, uniformity)
             }

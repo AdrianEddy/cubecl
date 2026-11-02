@@ -477,6 +477,7 @@ fn register_features(
     }
     comp_options.vulkan.max_vector_size = 4;
     comp_options.vulkan.push_constant_size = properties.limits.max_push_constants_size as usize;
+    comp_options.vulkan.max_workgroup_size_x = properties.limits.max_compute_work_group_size[0];
     comp_options.vulkan.supports_dp4a = extended_feat
         .shader_integer_dot_product
         .is_some_and(|it| it.shader_integer_dot_product == TRUE);

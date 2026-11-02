@@ -2,7 +2,9 @@ use crate::{
     CollectVerCapExtPass, ConvertArgsPass, PARAMS_NAME, SpirvKernel,
     lower::LowerOpsSpirvPass,
     ops::{
-        branch::BranchToSpirvConversionPass, builtin::LowerBuiltinsPass, memory::lower_shared,
+        branch::BranchToSpirvConversionPass,
+        builtin::{LowerBuiltinsPass, runs_linear},
+        memory::lower_shared,
         to_spirv_dialect::ToSpirvDialectPass,
     },
     params_storage_class,
@@ -416,7 +418,11 @@ fn declare_entry_point(ctx: &mut Context, module: SpirvModuleOp, shared_args: Ve
                 interface,
             );
             entry_point.get_operation().insert_at_front(block, ctx);
-            let (x, y, z) = entry.cube_dim.into();
+            // `LowerBuiltinsPass` derived the unit coordinates of a cube that runs linear.
+            let (x, y, z) = match runs_linear(ctx, entry.cube_dim) {
+                true => (entry.cube_dim.num_elems(), 1, 1),
+                false => entry.cube_dim.into(),
+            };
             let execution_mode =
                 ExecutionModeOp::new(ctx, func_name, ExecutionMode::LocalSize, vec![x, y, z]);
             execution_mode.get_operation().insert_at_front(block, ctx);

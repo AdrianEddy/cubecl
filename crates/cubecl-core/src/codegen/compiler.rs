@@ -26,4 +26,8 @@ pub struct VulkanCompilationOptions {
     pub max_spirv_version: (u8, u8),
     pub max_vector_size: usize,
     pub push_constant_size: usize,
+    /// The device's `maxComputeWorkGroupSize[0]`: a multi-dimensional cube of at most this many
+    /// units runs as a one-dimensional workgroup, so that its planes are runs of consecutive
+    /// `UNIT_POS`. `0` (unknown) runs every cube with its own dimensions.
+    pub max_workgroup_size_x: u32,
 }

@@ -795,6 +795,68 @@ pub fn test_plane_shuffle_down<
     });
 }
 
+/// Each plane of a cube of `PLANE_DIM` × planes dots `lhs` with the row of `rhs` its `UNIT_POS_Y`
+/// names, its units walking K in `CUBE_DIM_X`-wide steps, and its first unit writes the plane sum.
+#[cube(launch)]
+pub fn kernel_plane_sum_per_row<F: Float>(lhs: &[F], rhs: &[F], output: &mut [F], k: u32) {
+    let row = UNIT_POS_Y;
+    let steps = k / CUBE_DIM_X;
+    let mut acc = F::new(0.0);
+    for step in 0..steps {
+        let i = step * CUBE_DIM_X + UNIT_POS_X;
+        acc += lhs[i as usize] * rhs[(row * k + i) as usize];
+    }
+    let sum = plane_sum(acc);
+    if UNIT_POS_X == 0 {
+        output[row as usize] = sum;
+    }
+}
+
+/// A plane of a `(plane_dim, planes)` cube is the units of one `UNIT_POS_Y`, as every plane
+/// algorithm takes it. Vulkan leaves which invocations make a subgroup to the driver, and Intel's
+/// Arc compiler walked this kernel's 32×4 workgroup in 8×4 tiles: each plane summed eight units
+/// of four rows, and all four rows read the same sum.
+pub fn test_plane_sum_per_row<
+    TestRuntime: Runtime,
+    F: Float + num_traits::Float + CubeElement + Display,
+>(
+    client: Client,
+) {
+    let hardware = &client.properties().hardware;
+    if !client.features().plane.contains(Plane::Ops)
+        || hardware.plane_size_min != hardware.plane_size_max
+    {
+        // A cube's planes are only rows where the plane size is exact.
+        return;
+    }
+    let plane_dim = hardware.plane_size_max as usize;
+    let (planes, k) = (8usize, 4 * plane_dim);
+    let lhs: Vec<f64> = (0..k).map(|i| ((i * 7) % 13) as f64 - 6.0).collect();
+    let rhs: Vec<f64> = (0..planes * k)
+        .map(|i| ((i * 5) % 11) as f64 - 5.0)
+        .collect();
+    let expected: Vec<F> = (0..planes)
+        .map(|row| F::new((0..k).map(|i| lhs[i] * rhs[row * k + i]).sum()))
+        .collect();
+    let lhs: Vec<F> = lhs.into_iter().map(|x| F::new(x)).collect();
+    let rhs: Vec<F> = rhs.into_iter().map(|x| F::new(x)).collect();
+
+    let lhs = client.create_from_slice(F::as_bytes(&lhs));
+    let rhs = client.create_from_slice(F::as_bytes(&rhs));
+    let output = client.empty(planes * core::mem::size_of::<F>());
+    kernel_plane_sum_per_row::launch::<F>(
+        &client,
+        CubeCount::Static(1, 1, 1),
+        CubeDim::new_2d(plane_dim as u32, planes as u32),
+        unsafe { BufferArg::from_raw_parts(lhs, k) },
+        unsafe { BufferArg::from_raw_parts(rhs, planes * k) },
+        unsafe { BufferArg::from_raw_parts(output.clone(), planes) },
+        k as u32,
+    );
+
+    assert_equals_approx::<F>(&client, output, &expected, 1e-5);
+}
+
 fn test_plane_operation<F: Float + num_traits::Float + CubeElement + Display, Launch>(
     input: &[F],
     expected: &[F],
@@ -1134,6 +1196,14 @@ macro_rules! testgen_plane {
         #[$crate::runtime_tests::test_log::test]
         fn test_plane_shuffle_down_vec4() {
             impl_test_plane_shuffle_down(4);
+        }
+
+        #[$crate::runtime_tests::test_log::test]
+        fn test_plane_sum_per_row() {
+            let client = TestRuntime::client(&Default::default());
+            cubecl_core::runtime_tests::plane::test_plane_sum_per_row::<TestRuntime, FloatType>(
+                client,
+            );
         }
     };
 }

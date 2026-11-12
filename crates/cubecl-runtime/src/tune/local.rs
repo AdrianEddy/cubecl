@@ -258,10 +258,7 @@ where
                     crate::tune::AutotuneLogContext::new(&mut tuner.logger().lock());
                 log_context.set_checks(|| self.checks::<I, Out, Id>(&operations, &inputs));
             }
-            return operations
-                .fastest(fastest_index)
-                .execute(inputs)
-                .expect("Should run when selected by autotune.");
+            return execute_fastest(&operations, &key, fastest_index, inputs);
         }
 
         // Built after the fast path: a hit logs nothing, so it takes no logger lock.
@@ -276,10 +273,9 @@ where
 
         // Run the execution depending on the cache state.
         match fastest {
-            TuneCacheResult::Hit { fastest_index } => operations
-                .fastest(fastest_index)
-                .execute(inputs)
-                .expect("Should run when selected by autotune."),
+            TuneCacheResult::Hit { fastest_index } => {
+                execute_fastest(&operations, &key, fastest_index, inputs)
+            }
             TuneCacheResult::Miss => {
                 panic!(
                     "Somehow we STILL didn't check a tuning checksum or start tuning, something has gone wrong."
@@ -296,6 +292,36 @@ where
                         "All autotune operations failed, no viable operation found.\n{failures:?}"
                     ),
                 }
+            }
+        }
+    }
+}
+
+/// Runs the candidate elected for `key` on `inputs`, or, where it does not launch on them, the
+/// others in the plan's order. A key stands for a bucket of problems, and the winner is elected
+/// on the bucket's representative: one of its members can be refused where the representative
+/// was not, which costs that call the winner, not the process.
+fn execute_fastest<'a, AK: AutotuneKey, I: TuneInputs, Out: 'static, Id>(
+    operations: &TunableSet<AK, I, Out, Id>,
+    key: &AK,
+    fastest_index: usize,
+    inputs: <I as TuneInputs>::At<'a>,
+) -> Out
+where
+    <I as TuneInputs>::At<'a>: Clone,
+{
+    match operations.fastest(fastest_index).execute(inputs.clone()) {
+        Ok(output) => output,
+        Err(refused) => {
+            log::debug!(
+                "The candidate autotune elected for {key} does not launch on these inputs \
+                 ({refused:?}); running the next that does"
+            );
+            match execute_in_plan_order(operations, key, inputs) {
+                Ok(output) => output,
+                Err(failures) => panic!(
+                    "All autotune operations failed, no viable operation found.\n{failures:?}"
+                ),
             }
         }
     }
@@ -414,5 +440,19 @@ mod tests {
         );
         let nothing = set().with(Tunable::<FakeAutotuneKey, (), usize>::new("fails", fails));
         assert!(execute_in_plan_order(&nothing, &FakeAutotuneKey, ()).is_err());
+    }
+
+    /// The elected candidate runs where it launches; where a member of its key's bucket refuses
+    /// it, the call takes the plan's first candidate that launches instead of failing.
+    #[test]
+    fn an_elected_candidate_that_does_not_launch_gives_way_to_the_plan() {
+        let group = TuneGroup::<FakeAutotuneKey>::new("group", |_| 1);
+        let operations = set()
+            .with(Tunable::<FakeAutotuneKey, (), usize>::new("elected", fails).group(&group, |_| 2))
+            .with(
+                Tunable::<FakeAutotuneKey, (), usize>::new("next", answers(1)).group(&group, |_| 1),
+            );
+        assert_eq!(execute_fastest(&operations, &FakeAutotuneKey, 0, ()), 1);
+        assert_eq!(execute_fastest(&operations, &FakeAutotuneKey, 1, ()), 1);
     }
 }

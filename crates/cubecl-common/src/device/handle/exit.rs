@@ -119,8 +119,12 @@ mod handler {
         /// when that thread ends, with the process still running. A library loaded later from
         /// another thread has no guard, and relies on the exit handler.
         extern "C" fn arm() {
-            // SAFETY: both only read the calling process's and thread's ids.
-            let main_thread = unsafe { libc::getpid() == libc::gettid() };
+            // SAFETY: both only read the calling process's and thread's ids. The thread's through
+            // the syscall, not glibc's `gettid` wrapper, which glibc gained only in 2.30: a binary
+            // linked against an older one, as one built to run on older distributions is, would
+            // not link.
+            let main_thread =
+                unsafe { libc::c_long::from(libc::getpid()) == libc::syscall(libc::SYS_gettid) };
             if main_thread {
                 GUARD.with(|_| ());
             }

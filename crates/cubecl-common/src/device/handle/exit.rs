@@ -178,8 +178,11 @@ mod handler {
 
         #[cfg(target_os = "linux")]
         fn is_main_thread() -> bool {
-            // SAFETY: both only read the calling process's and thread's ids.
-            unsafe { libc::getpid() == libc::gettid() }
+            // SAFETY: both only read the calling process's and thread's ids. The thread's through
+            // the syscall, not glibc's `gettid` wrapper, which glibc gained only in 2.30: a binary
+            // linked against an older one, as one built to run on older distributions is, would
+            // not link.
+            unsafe { libc::c_long::from(libc::getpid()) == libc::syscall(libc::SYS_gettid) }
         }
 
         #[cfg(target_os = "macos")]

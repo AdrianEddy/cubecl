@@ -600,6 +600,13 @@ impl Server for MetalServer {
             .map(|mut command| command.memory_report())
     }
 
+    /// Every stream the device has created: each has pools of its own, so the
+    /// device's memory report and its cleanup go through all of them, not only
+    /// the calling thread's.
+    fn stream_ids(&self) -> Vec<StreamId> {
+        self.streams.stream_ids().collect()
+    }
+
     fn memory_cleanup(&mut self, stream_id: StreamId) -> Result<(), ServerError> {
         self.command_no_inputs(stream_id)?.memory_cleanup()
     }

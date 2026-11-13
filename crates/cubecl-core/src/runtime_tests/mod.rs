@@ -28,6 +28,7 @@ pub mod harness;
 pub mod index;
 pub mod iter;
 pub mod launch;
+pub mod memory_scope;
 pub mod metadata;
 pub mod minifloat;
 pub mod native_array;

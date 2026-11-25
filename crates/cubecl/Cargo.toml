@@ -48,6 +48,8 @@ warn-redundant-comptime = ["cubecl-core/warn-redundant-comptime"]
 warn-redundant-allow = ["cubecl-core/warn-redundant-allow"]
 
 exclusive-memory-only = ["cubecl-wgpu?/exclusive-memory-only"]
+# cubecl-wgpu built against the AdrianEddy/wgpu fork (see its `wgpu-fork` feature).
+wgpu-fork = ["cubecl-wgpu?/wgpu-fork"]
 
 profile-tracy = ["cubecl-runtime/profile-tracy", "cubecl-wgpu?/profile-tracy"]
 

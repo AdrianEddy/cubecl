@@ -131,7 +131,9 @@ impl PoisonWatch {
         while let Err(wgpu::PollError::Timeout) = polled {
             self.check()?;
             // Pinned on the first slice, so the wait never chases what other streams submit later.
-            submission.get_or_insert_with(|| queue.submit(core::iter::empty()));
+            if submission.is_none() {
+                submission = queue.submit(core::iter::empty()).into();
+            }
             stalled += WAIT_SLICE;
             if stalled >= PROBE_AFTER {
                 queue.submit(core::iter::empty());

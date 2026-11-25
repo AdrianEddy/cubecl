@@ -49,6 +49,10 @@ pliron-dump = ["std", "cubecl-cpp/pliron-dump", "cubecl-spirv?/pliron-dump"]
 vulkan-validate = []
 
 renderdoc = ["std", "dep:renderdoc"]
+# Builds against the AdrianEddy/wgpu fork (upstream trunk and its fixes) instead of crates.io wgpu 30:
+# the fork's Vulkan `Adapter::device_from_raw` takes the device's enabled features and a `DeviceQueue`.
+# The application's root manifest points wgpu at the fork with `[patch.crates-io]`.
+wgpu-fork = []
 
 [dependencies]
 # Runtime Deps

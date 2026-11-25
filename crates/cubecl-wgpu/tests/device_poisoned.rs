@@ -44,6 +44,8 @@ fn a_poisoned_device_surfaces_at_every_sync_point() {
     launch_fill(&before);
     let bytes = client.read_one(before).expect("the device is healthy");
     assert_eq!(u32::from_bytes(&bytes), &[7]);
+    // A read's bytes view a mapped staging buffer, and `destroy` panics while any view is alive.
+    drop(bytes);
 
     wgpu_device.destroy();
     // `destroy` defers the device-lost notification to the device's next poll, once its queue

@@ -102,8 +102,8 @@ unsafe impl RelocationCopier<WgpuStorage> for WgpuRelocationCopier {
         let Some(Batch { encoder, errors }) = self.batch.take() else {
             return Ok(());
         };
-        let submission = self.queue.submit([encoder.finish()]);
-        self.wait(Some(submission))?;
+        let submission = self.queue.submit([encoder.finish()]).into();
+        self.wait(submission)?;
         match cubecl_environment::future::block_on(errors.pop()) {
             Some(error) => Err(ServerError::Generic {
                 reason: format!("wgpu: a relocation copy was refused ({error})"),

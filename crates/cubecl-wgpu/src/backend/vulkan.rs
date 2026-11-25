@@ -208,23 +208,42 @@ fn request_device(
     // block allocations. However, we already batch allocations, so we
     // can use MemoryHints::MemoryUsage to lower memory usage.
     let memory_hints = wgpu::MemoryHints::MemoryUsage;
+    // SAFETY: `vk_device` was created from `adapter` with `extensions` and one queue of
+    // `family_index`. Its features are `phys_features`'s plus the core ones `supported_feat` adds.
+    // wgpu-hal is told `phys_features`, the set wgpu 30 derives from `features` itself, so it relies
+    // on no feature beyond them.
+    #[cfg(not(feature = "wgpu-fork"))]
     let device = unsafe {
-        adapter
-            .device_from_raw(
-                vk_device,
-                None,
-                &extensions,
-                features,
-                &limits,
-                &memory_hints,
-                family_info.queue_family_index,
-                0,
-            )
-            .map_err(|err| crate::WgpuInitError::RequestDevice {
-                message: err.to_string(),
-            })?
+        adapter.device_from_raw(
+            vk_device,
+            None,
+            &extensions,
+            features,
+            &limits,
+            &memory_hints,
+            family_info.queue_family_index,
+            0,
+        )
     };
+    #[cfg(feature = "wgpu-fork")]
+    let device = unsafe {
+        adapter.device_from_raw(
+            vk_device,
+            None,
+            &extensions,
+            &phys_features,
+            features,
+            &limits,
+            &memory_hints,
+            vulkan::DeviceQueue::new(family_info.queue_family_index, 0),
+        )
+    };
+    let device = device.map_err(|err| crate::WgpuInitError::RequestDevice {
+        message: err.to_string(),
+    })?;
 
+    // The `..Default::default()` tail is redundant on wgpu 30; it fills the fields trunk added.
+    #[allow(clippy::needless_update)]
     let descriptor = DeviceDescriptor {
         label: None,
         required_features: features,
@@ -233,6 +252,7 @@ fn request_device(
         trace: wgpu::Trace::Off,
         // SAFETY: Enabling experimental passthrough shaders.
         experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
+        ..Default::default()
     };
 
     unsafe {

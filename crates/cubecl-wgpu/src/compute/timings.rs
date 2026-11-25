@@ -293,12 +293,10 @@ fn get_cur_timestamp(queue: &wgpu::Queue, device: &wgpu::Device, poison: &Poison
 
     let commands = [timestamp_encoder.finish(), copy_encoder.finish()];
 
-    let submission = queue.submit(commands);
+    let submission = queue.submit(commands).into();
     map_buffer.slice(..).map_async(wgpu::MapMode::Read, |_| ());
 
-    poison
-        .wait_unless_lost(device, queue, Some(submission))
-        .unwrap();
+    poison.wait_unless_lost(device, queue, submission).unwrap();
 
     let view = map_buffer.slice(..).get_mapped_range().unwrap();
     u64::from_le_bytes((*view).try_into().unwrap())

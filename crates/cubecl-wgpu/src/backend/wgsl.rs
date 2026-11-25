@@ -33,6 +33,9 @@ pub fn bindings(
 }
 
 /// Request a WGSL device, returning device creation failures.
+// The `..Default::default()` tail is redundant on wgpu 30; it fills the fields trunk added (the
+// `wgpu-fork` feature's wgpu).
+#[allow(clippy::needless_update)]
 pub async fn try_request_device(
     adapter: &wgpu::Adapter,
 ) -> Result<(wgpu::Device, wgpu::Queue), crate::WgpuInitError> {
@@ -51,6 +54,7 @@ pub async fn try_request_device(
             trace: wgpu::Trace::Off,
             // SAFETY: Enabling experimental passthrough shaders.
             experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
+            ..Default::default()
         })
         .await
         .map_err(|err| crate::WgpuInitError::RequestDevice {

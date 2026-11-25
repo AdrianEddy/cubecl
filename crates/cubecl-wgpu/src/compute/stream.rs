@@ -845,13 +845,13 @@ impl WgpuStream {
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("CubeCL Write Flush Encoder"),
                     });
-            let index = self.queue.submit([write_flush_encoder.finish()]);
+            let index = self.queue.submit([write_flush_encoder.finish()]).into();
 
             // Wait for the GPU to finish processing these writes before continuing.
             #[cfg(not(target_family = "wasm"))]
             if let Err(e) = self
                 .poison
-                .wait_unless_lost(&self.device, &self.queue, Some(index))
+                .wait_unless_lost(&self.device, &self.queue, index)
                 && !self.poison.is_poisoned()
             {
                 log::warn!("wgpu: write flush poll failed ({e})");
@@ -911,7 +911,7 @@ impl WgpuStream {
         };
 
         // This will _first_ fire off all pending write_buffer work.
-        let index = self.queue.submit([tasks_encoder.finish()]);
+        let index = self.queue.submit([tasks_encoder.finish()]).into();
 
         // Release cross-stream input pins.
         if !self.shared_bindings.is_empty() {
@@ -1194,7 +1194,7 @@ mod __submission_load {
     #[derive(Default, Debug)]
     pub enum SubmissionLoad {
         Init {
-            last_index: wgpu::SubmissionIndex,
+            last_index: Option<wgpu::SubmissionIndex>,
             tasks_count_submitted: usize,
         },
         #[default]
@@ -1208,7 +1208,7 @@ mod __submission_load {
             device: &wgpu::Device,
             queue: &wgpu::Queue,
             tasks_count: usize,
-            mut index: wgpu::SubmissionIndex,
+            mut index: Option<wgpu::SubmissionIndex>,
         ) {
             match self {
                 SubmissionLoad::Init {
@@ -1227,7 +1227,7 @@ mod __submission_load {
 
                     if *tasks_count_submitted >= MAX_TOTAL_TASKS {
                         core::mem::swap(last_index, &mut index);
-                        if let Err(e) = poison.wait_unless_lost(device, queue, Some(index))
+                        if let Err(e) = poison.wait_unless_lost(device, queue, index)
                             && !poison.is_poisoned()
                         {
                             log::warn!("wgpu: waiting on a throttled submission failed ({e})")
@@ -1260,7 +1260,7 @@ mod __submission_load_wasm {
             _device: &wgpu::Device,
             _queue: &wgpu::Queue,
             _tasks_count: usize,
-            _index: wgpu::SubmissionIndex,
+            _index: Option<wgpu::SubmissionIndex>,
         ) {
             // Nothing to do.
         }

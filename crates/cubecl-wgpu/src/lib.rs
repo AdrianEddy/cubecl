@@ -18,6 +18,11 @@ pub use runtime::*;
 /// The exact wgpu version used by this runtime, for sharing resources with applications.
 pub use wgpu;
 
+/// The device request a setup's device comes from, on any backend: what an application asks its
+/// adapter for again to register a new runtime there ([`try_init_device`]), as when its device was
+/// lost.
+pub use backend::try_request_device;
+
 #[cfg(feature = "spirv")]
 pub use backend::vulkan;
 

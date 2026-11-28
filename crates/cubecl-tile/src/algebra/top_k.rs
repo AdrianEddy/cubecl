@@ -12,7 +12,9 @@ use crate::{Carrier, Indexed, Monoid};
 /// list stays in registers. Past it, as for the `k = 300` of an object-detection head, the walks
 /// stay loops, since unrolled the kernel grows with `K²` and the backend compilers stop
 /// returning from it. A loop around a walk, over the values a list takes in from memory, stays a
-/// loop whatever `K`: unrolled, its code outgrows the instruction cache.
+/// loop whatever `K`: unrolled, its code outgrows the instruction cache. Past it, the list lives in
+/// memory, so every other pass over its slots, its fill and its copies, stays a loop too: unrolled,
+/// they made each kernel of a `k = 300` reduce take NVIDIA's Vulkan compiler up to 137 s.
 pub const TOP_K_UNROLL_BUDGET: usize = 4096;
 
 /// The `K` best values seen, each with the index it was read at, best first, pointwise on
@@ -204,7 +206,7 @@ impl<E: Numeric, N: Size, K: Size> TopK<E, N, K> {
         let none = Indexed::<E, N>::identity(monoid);
         let mut held_values = Array::new(k);
         let mut held_indices = Array::new(k);
-        #[unroll]
+        #[unroll(unrolled)]
         for j in 0..k {
             held_values[j] = value.values[j];
             held_indices[j] = value.indices[j];
@@ -382,10 +384,11 @@ impl<E: Numeric, N: Size, K: Size> Carrier for TopK<E, N, K> {
     fn identity(#[comptime] monoid: Monoid) -> Self {
         ordered_only(monoid);
         let k = K::value();
+        let unrolled = comptime!(k * k <= TOP_K_UNROLL_BUDGET);
         let none = Indexed::<E, N>::identity(monoid);
         let mut values = Array::new(k);
         let mut indices = Array::new(k);
-        #[unroll]
+        #[unroll(unrolled)]
         for j in 0..k {
             values[j] = none.value;
             indices[j] = none.index;

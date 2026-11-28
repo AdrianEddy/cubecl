@@ -106,7 +106,7 @@ impl<E: Numeric, N: Size, K: Size> TopValues<E, N, K> {
         let none = Vector::<E, N>::new(Monoid::identity::<E>(monoid));
         let unit = Vector::<u32, N>::new(UNIT_POS_PLANE);
         let mut held = Array::new(k);
-        #[unroll]
+        #[unroll(unrolled)]
         for j in 0..k {
             held[j] = value.values[j];
         }
@@ -219,9 +219,10 @@ impl<E: Numeric, N: Size, K: Size> Carrier for TopValues<E, N, K> {
     fn identity(#[comptime] monoid: Monoid) -> Self {
         ordered_only(monoid);
         let k = K::value();
+        let unrolled = comptime!(k * k <= TOP_K_UNROLL_BUDGET);
         let none = Vector::<E, N>::new(Monoid::identity::<E>(monoid));
         let mut values = Array::new(k);
-        #[unroll]
+        #[unroll(unrolled)]
         for j in 0..k {
             values[j] = none;
         }
@@ -259,13 +260,14 @@ impl<E: Numeric, N: Size, K: Size> Carrier for TopValues<E, N, K> {
             }
             UnitShare::Group { unit_bits } => {
                 let k = K::value();
+                let unrolled = comptime!(k * k <= TOP_K_UNROLL_BUDGET);
                 let mut total = value;
                 #[unroll]
                 for bit in 0..comptime!(usize::BITS - unit_bits.leading_zeros()) {
                     if comptime!(unit_bits & (1 << bit) != 0) {
                         let mask = 1u32 << bit;
                         let mut other = Array::new(k);
-                        #[unroll]
+                        #[unroll(unrolled)]
                         for j in 0..k {
                             other[j] = plane_shuffle_xor(total.values[j], mask);
                         }
